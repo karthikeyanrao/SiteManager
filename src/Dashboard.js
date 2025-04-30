@@ -7,6 +7,7 @@ import ThreeBackground from './ThreeBackground';
 import MyItems from './MyItems';
 import './Dashboard.css';
 import Attendance from './Attendance';
+import Profile from './Profile';
 
 const Dashboard = () => {
   const navigate = useNavigate();
@@ -50,7 +51,9 @@ const Dashboard = () => {
       case 'attendance':
         return <Attendance />;
       case 'items':
-       return <MyItems />;
+        return <MyItems />;
+      case 'profile':
+        return <Profile />;
       default:
         return <Projects />;
     }
@@ -85,12 +88,23 @@ const Dashboard = () => {
                 <div className="profile-info">
                   <span className="profile-email">{user?.email}</span>
                 </div>
-                <button 
-                  className="logout-button"
-                  onClick={handleLogout}
-                >
-                  Logout
-                </button>
+                <div className="profile-actions">
+                  <button 
+                    className="profile-menu-button"
+                    onClick={() => {
+                      setActiveTab('profile');
+                      setShowProfileMenu(false);
+                    }}
+                  >
+                    Profile
+                  </button>
+                  <button 
+                    className="logout-button"
+                    onClick={handleLogout}
+                  >
+                    Logout
+                  </button>
+                </div>
               </div>
             )}
           </div>
