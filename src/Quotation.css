@@ -1,7 +1,7 @@
 .quotations-page {
-  height: calc(100vh - 60px);
+ 
   overflow-y: auto;
-  background-color: #1a1a1a;
+  background-color: #242424;
 }
 
 .quotations-container {
@@ -1019,4 +1019,16 @@ tfoot td {
 
 .modal-close-button:hover {
   opacity: 1;
+}
+
+/* Chrome, Safari, Edge, Opera */
+.item-price-input::-webkit-outer-spin-button,
+.item-price-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Firefox */
+.item-price-input[type=number] {
+  -moz-appearance: textfield;
 } 

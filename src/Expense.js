@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, addDoc, getDocs, query, where, Timestamp } from 'firebase/firestore';
+import { collection, addDoc, getDocs, query, where, Timestamp, doc } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
@@ -60,8 +60,9 @@ const Expense = () => {
 
   // Fetch expenses from Firebase
   useEffect(() => {
-    const fetchExpenses = async () => {
+    const fetchExpensesAndPayments = async () => {
       try {
+        // Fetch regular expenses
         const expensesRef = collection(db, 'expenses');
         const q = query(expensesRef, where('userId', '==', auth.currentUser?.uid));
         const querySnapshot = await getDocs(q);
@@ -70,16 +71,39 @@ const Expense = () => {
           ...doc.data(),
           date: doc.data().date?.toDate().toISOString().split('T')[0]
         }));
-        setExpenses(expensesData);
+
+        // Fetch all projects for this user
+        const projectsRef = collection(db, 'projects');
+        const projectsQ = query(projectsRef, where('createdBy', '==', auth.currentUser?.uid));
+        const projectsSnapshot = await getDocs(projectsQ);
+        let paymentExpenses = [];
+        projectsSnapshot.docs.forEach(projectDoc => {
+          const project = projectDoc.data();
+          const projectName = project.name;
+          (project.payments || []).forEach(payment => {
+            paymentExpenses.push({
+              id: `pay-${projectDoc.id}-${payment.id}`,
+              description: `${projectName} - ${payment.description}`,
+              amount: payment.amountGiven,
+              type: 'income',
+              category: 'project-payment',
+              date: payment.date?.toDate ? payment.date.toDate().toISOString().split('T')[0] : payment.date,
+              fromPayment: true
+            });
+          });
+        });
+
+        // Combine and set
+        setExpenses([...expensesData, ...paymentExpenses]);
         setLoading(false);
       } catch (error) {
-        console.error('Error fetching expenses:', error);
+        console.error('Error fetching expenses or payments:', error);
         setLoading(false);
       }
     };
 
     if (auth.currentUser) {
-      fetchExpenses();
+      fetchExpensesAndPayments();
     }
   }, []);
 

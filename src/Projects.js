@@ -1,10 +1,46 @@
 import React, { useState, useEffect } from 'react';
-import { collection, addDoc, getDocs, query, where, Timestamp } from 'firebase/firestore';
+import { collection, addDoc, getDocs, query, where, Timestamp, doc, getDoc, updateDoc } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import './Projects.css';
-
+import Bill from './Bill';
+import PaymentP from './PaymentP';
 import Quotation from './Quotation';
 
+export const updateProjectStatus = async (projectId) => {
+  try {
+    const projectRef = doc(db, 'projects', projectId);
+    const projectDoc = await getDoc(projectRef);
+    
+    if (projectDoc.exists()) {
+      const projectData = projectDoc.data();
+      let newStatus = 'Planning';
+      // Calculate total quotation from bills
+      let totalQuotation = 0;
+      if (projectData.bills && Array.isArray(projectData.bills)) {
+        totalQuotation = projectData.bills.reduce((sum, bill) => sum + (bill.total || 0), 0);
+      }
+      // Calculate total payments given
+      let totalGiven = 0;
+      if (projectData.payments && Array.isArray(projectData.payments)) {
+        totalGiven = projectData.payments.reduce((sum, p) => sum + (parseFloat(p.amountGiven) || 0), 0);
+      }
+      // If all payments cover the total quotation, mark as Completed
+      if (totalQuotation > 0 && totalGiven >= totalQuotation) {
+        newStatus = 'Completed';
+      } else if (projectData.bills && projectData.bills.length > 0) {
+        newStatus = 'Started';
+      } else if (projectData.quotations && projectData.quotations.length > 0) {
+        newStatus = 'Quotation';
+      }
+      if (newStatus !== projectData.status) {
+        await updateDoc(projectRef, { status: newStatus });
+        console.log(`Project status updated to: ${newStatus}`);
+      }
+    }
+  } catch (error) {
+    console.error('Error updating project status:', error);
+  }
+};
 
 const Projects = () => {
   const [selectedProject, setSelectedProject] = useState(null);
@@ -48,7 +84,8 @@ const Projects = () => {
         const projectsData = querySnapshot.docs.map(doc => ({
           id: doc.id,
           ...doc.data(),
-          dueDate: doc.data().dueDate?.toDate().toISOString().split('T')[0]
+          dueDate: doc.data().dueDate?.toDate().toISOString().split('T')[0],
+          status: doc.data().status || 'Planning' // Ensure status is included, default to Planning
         }));
         setProjects(projectsData);
         setLoading(false);
@@ -63,6 +100,37 @@ const Projects = () => {
     }
   }, []);
 
+  useEffect(() => {
+    if (loading) {
+      const timer = setTimeout(() => {
+        // Only fetch if still loading after 2 seconds
+        if (loading && auth.currentUser) {
+          // Re-run your fetchProjects logic
+          const fetchProjects = async () => {
+            try {
+              const projectsRef = collection(db, 'projects');
+              const q = query(projectsRef, where('createdBy', '==', auth.currentUser?.uid));
+              const querySnapshot = await getDocs(q);
+              const projectsData = querySnapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data(),
+                dueDate: doc.data().dueDate?.toDate().toISOString().split('T')[0],
+                status: doc.data().status || 'Planning' // Ensure status is included, default to Planning
+              }));
+              setProjects(projectsData);
+              setLoading(false);
+            } catch (error) {
+              console.error('Error fetching projects:', error);
+              setLoading(false);
+            }
+          };
+          fetchProjects();
+        }
+      }, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [loading]);
+
   const handleNewProjectSubmit = async (e) => {
     e.preventDefault();
     try {
@@ -75,7 +143,7 @@ const Projects = () => {
         name: newProject.name,
         dueDate: Timestamp.fromDate(new Date(newProject.dueDate)),
         budget: parseFloat(newProject.budget),
-        status: 'Planning',
+        status: 'Planning', // Set initial status
         createdAt: Timestamp.now(),
         createdBy: auth.currentUser.uid,
         quotations: [],
@@ -94,7 +162,8 @@ const Projects = () => {
       setProjects(prev => [...prev, {
         id: docRef.id,
         ...projectData,
-        dueDate: newProject.dueDate // Keep the formatted date for display
+        dueDate: newProject.dueDate, // Keep the formatted date for display
+        status: 'Planning' // Ensure status is included in local state
       }]);
 
       // Reset form and close modal
@@ -109,7 +178,9 @@ const Projects = () => {
     switch (status?.toLowerCase()) {
       case 'planning':
         return '🎯';
-      case 'in-progress':
+      case 'quotation':
+        return '📝';
+      case 'started':
         return '🚀';
       case 'completed':
         return '✅';
@@ -123,13 +194,16 @@ const Projects = () => {
       case 'quotations':
         return <Quotation project={selectedProject} />;
       case 'bills':
-        return <div>Bills Content</div>;
+        return <Bill project={selectedProject} />;
       case 'payments':
-        return <div>Payments Content</div>;
+        return <PaymentP project={selectedProject} />;
       default:
         return <Quotation project={selectedProject} />;
     }
   };
+
+  const activeProjects = projects.filter(p => p.status?.toLowerCase() !== 'completed');
+  const completedProjects = projects.filter(p => p.status?.toLowerCase() === 'completed');
 
   const renderProjectContent = () => {
     if (loading) {
@@ -138,36 +212,74 @@ const Projects = () => {
 
     if (!selectedProject) {
       return (
-        <div className="projects-grid">
-          {projects.map(project => (
-            <div 
-              key={project.id} 
-              className="project-card"
-              onClick={() => setSelectedProject(project)}
-            >
-              <div className="project-card-header">
-                <h3>{project.name}</h3>
-                <span className={`status-badge ${project.status?.toLowerCase().replace(' ', '-')}`}>
-                  {getStatusIcon(project.status)} {project.status}
-                </span>
-              </div>
-              <div className="project-card-content">
-                <div className="project-info">
-                  <div className="info-row">
-                    <span className="info-label">Due Date:</span>
-                    <span className="info-value">{new Date(project.dueDate).toLocaleDateString()}</span>
-                  </div>
-                  <div className="info-row">
-                    <span className="info-label">Budget:</span>
-                    <span className="info-value">₹{project.budget?.toLocaleString()}</span>
+        <>
+          <div className="projects-grid">
+            {activeProjects.map(project => (
+              <div 
+                key={project.id} 
+                className="project-card"
+                onClick={() => setSelectedProject(project)}
+              >
+                <div className="project-card-header">
+                  <h3>{project.name}</h3>
+                  <span className={`status-badge ${project.status?.toLowerCase().replace(' ', '-')}`}>
+                    {getStatusIcon(project.status)} {project.status}
+                  </span>
+                </div>
+                <div className="project-card-content">
+                  <div className="project-info">
+                    <div className="info-row">
+                      <span className="info-label">Due Date:</span>
+                      <span className="info-value">{new Date(project.dueDate).toLocaleDateString()}</span>
+                    </div>
+                    <div className="info-row">
+                      <span className="info-label">Budget:</span>
+                      <span className="info-value">₹{project.budget?.toLocaleString()}</span>
+                    </div>
                   </div>
                 </div>
               </div>
+            ))}
+          </div>
+          {completedProjects.length > 0 && (
+            <div className="completed-projects-section">
+              <h2 className="completed-title">Completed Projects</h2>
+              <div className="projects-grid">
+                {completedProjects.map(project => (
+                  <div 
+                    key={project.id} 
+                    className="project-card completed"
+                    onClick={() => setSelectedProject(project)}
+                  >
+                    <div className="project-card-header">
+                      <h3>{project.name}</h3>
+                      <span className={`status-badge ${project.status?.toLowerCase().replace(' ', '-')}`}>
+                        {getStatusIcon(project.status)} {project.status}
+                      </span>
+                    </div>
+                    <div className="project-card-content">
+                      <div className="project-info">
+                        <div className="info-row">
+                          <span className="info-label">Due Date:</span>
+                          <span className="info-value">{new Date(project.dueDate).toLocaleDateString()}</span>
+                        </div>
+                        <div className="info-row">
+                          <span className="info-label">Budget:</span>
+                          <span className="info-value">₹{project.budget?.toLocaleString()}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
-          ))}
-        </div>
+          )}
+        </>
       );
     }
+
+    // In detail view, restrict actions if completed
+    const isCompleted = selectedProject.status?.toLowerCase() === 'completed';
 
     return (
       <div className="project-detail">
@@ -193,6 +305,11 @@ const Projects = () => {
               <span className={`status-badge ${selectedProject.status?.toLowerCase().replace(' ', '-')}`}>
                 {getStatusIcon(selectedProject.status)} {selectedProject.status}
               </span>
+              {selectedProject.status !== 'Completed' && (
+                <button className="mark-completed-btn" onClick={() => handleMarkCompleted(selectedProject.id)}>
+                  <span className="completed-icon">✅</span> Completed
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -219,10 +336,97 @@ const Projects = () => {
         </div>
 
         <div className="tab-content">
-          {renderTabContent()}
+          {/* Pass a prop to child components to indicate view-only mode if completed */}
+          {projectTab.toLowerCase() === 'quotations' && <Quotation project={selectedProject} viewOnly={isCompleted} />}
+          {projectTab.toLowerCase() === 'bills' && <Bill project={selectedProject} viewOnly={isCompleted} />}
+          {projectTab.toLowerCase() === 'payments' && <PaymentP project={selectedProject} viewOnly={isCompleted} />}
         </div>
       </div>
     );
+  };
+
+  // Add function to handle quotation addition
+  const handleAddQuotation = async (projectId, quotationData) => {
+    try {
+      const projectRef = doc(db, 'projects', projectId);
+      const projectDoc = await getDoc(projectRef);
+      
+      if (projectDoc.exists()) {
+        const projectData = projectDoc.data();
+        const updatedQuotations = [...(projectData.quotations || []), quotationData];
+        
+        await updateDoc(projectRef, {
+          quotations: updatedQuotations
+        });
+
+        // Update project status after adding quotation
+        await updateProjectStatus(projectId);
+      }
+    } catch (error) {
+      console.error('Error adding quotation:', error);
+      throw error;
+    }
+  };
+
+  // Add function to handle bill addition
+  const handleAddBill = async (projectId, billData) => {
+    try {
+      const projectRef = doc(db, 'projects', projectId);
+      const projectDoc = await getDoc(projectRef);
+      
+      if (projectDoc.exists()) {
+        const projectData = projectDoc.data();
+        const updatedBills = [...(projectData.bills || []), billData];
+        
+        await updateDoc(projectRef, {
+          bills: updatedBills
+        });
+
+        // Update project status after adding bill
+        await updateProjectStatus(projectId);
+      }
+    } catch (error) {
+      console.error('Error adding bill:', error);
+      throw error;
+    }
+  };
+
+  // Add function to handle payment addition
+  const handleAddPayment = async (projectId, paymentData) => {
+    try {
+      const projectRef = doc(db, 'projects', projectId);
+      const projectDoc = await getDoc(projectRef);
+      
+      if (projectDoc.exists()) {
+        const projectData = projectDoc.data();
+        const updatedPayments = [...(projectData.payments || []), paymentData];
+        
+        await updateDoc(projectRef, {
+          payments: updatedPayments
+        });
+
+        // Update project status after adding payment
+        await updateProjectStatus(projectId);
+      }
+    } catch (error) {
+      console.error('Error adding payment:', error);
+      throw error;
+    }
+  };
+
+  // Inside the Projects component, add a handler to mark a project as completed
+  const handleMarkCompleted = async (projectId) => {
+    if (!window.confirm('Are you sure you want to mark this project as Completed? This action cannot be undone.')) return;
+    try {
+      const projectRef = doc(db, 'projects', projectId);
+      await updateDoc(projectRef, { status: 'Completed' });
+      setProjects(prev => prev.map(p => p.id === projectId ? { ...p, status: 'Completed' } : p));
+      if (selectedProject && selectedProject.id === projectId) {
+        setSelectedProject({ ...selectedProject, status: 'Completed' });
+      }
+    } catch (error) {
+      console.error('Error marking project as completed:', error);
+    }
   };
 
   return (

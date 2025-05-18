@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { collection, addDoc, getDocs, query, where, updateDoc, deleteDoc, doc } from 'firebase/firestore';
+import { collection, addDoc, getDocs, query, where, updateDoc, deleteDoc, doc, getDoc, arrayUnion } from 'firebase/firestore';
 import { db } from './firebase';
 import './Quotation.css';
 import MyItems from './MyItems';
 import { auth } from './firebase';
-import { getDoc } from 'firebase/firestore';
+import { updateProjectStatus } from './Projects';
 
-const Quotation = ({ project }) => {
+const Quotation = ({ project, viewOnly }) => {
   const [quotations, setQuotations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -262,6 +262,23 @@ const Quotation = ({ project }) => {
     }));
   };
 
+  const handlePriceChange = (index, price) => {
+    setNewQuotation(prev => ({
+      ...prev,
+      items: prev.items.map((item, i) => {
+        if (i === index) {
+          const newPrice = Number(price);
+          return {
+            ...item,
+            price: newPrice,
+            total: newPrice * item.quantity
+          };
+        }
+        return item;
+      })
+    }));
+  };
+
   const calculateTotal = (items) => {
     return items.reduce((sum, item) => sum + (item.total || 0), 0);
   };
@@ -286,63 +303,184 @@ const Quotation = ({ project }) => {
       const isConfirmed = window.confirm('Are you sure you want to move this quotation to bill?');
       
       if (isConfirmed) {
-        // Create a new bill document
+        console.log('Starting move to bill process...');
+        
+        // Generate bill number
+        const billNumber = await generateBillNumber();
+        console.log('Generated bill number:', billNumber);
+        
+        // Create bill data with proper Firestore timestamp
         const billData = {
-          ...quotation,
+          billNumber,
           quotationId: quotation.id,
-          billNumber: await generateBillNumber(),
+          quotationNumber: quotation.quotationNumber,
+          fromAddress: quotation.fromAddress,
+          toAddress: quotation.toAddress,
+          items: quotation.items,
+          total: quotation.total,
           createdAt: new Date(),
           status: 'pending',
-          type: 'bill'
+          projectId: project.id
         };
-        delete billData.id; // Remove the quotation id before creating bill
 
-        // Add to bills collection
-        await addDoc(collection(db, 'bills'), billData);
+        console.log('Created bill data:', billData);
 
-        // Update quotation status and remove edit ability
-        await updateDoc(doc(db, 'quotations', quotation.id), {
-          status: 'moved_to_bill',
-          movedToBill: true
-        });
+        // Get project reference
+        const projectRef = doc(db, 'projects', project.id);
+        console.log('Project reference:', project.id);
+        
+        // Get current project data
+        const projectDoc = await getDoc(projectRef);
+        if (!projectDoc.exists()) {
+          throw new Error('Project not found');
+        }
 
-        // Refresh quotations
-        const q = query(collection(db, 'quotations'), where('projectId', '==', project.id));
-        const querySnapshot = await getDocs(q);
-        const quotationsList = querySnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        setQuotations(quotationsList);
+        const projectData = projectDoc.data();
+        console.log('Current project data:', projectData);
 
-        // Close view modal
-        setViewQuotation(null);
-        alert('Quotation successfully moved to bill!');
+        try {
+          // If bills array doesn't exist or is not an array, initialize it
+          if (!projectData.bills || !Array.isArray(projectData.bills)) {
+            console.log('Initializing bills array...');
+            await updateDoc(projectRef, {
+              bills: [billData]
+            });
+            console.log('Bills array initialized successfully');
+          } else {
+            // If bills array exists, add to it
+            console.log('Adding to existing bills array...');
+            // First convert any Firestore timestamps in existing bills to regular dates
+            const existingBills = projectData.bills.map(bill => ({
+              ...bill,
+              createdAt: bill.createdAt?.toDate?.() || bill.createdAt
+            }));
+            
+            await updateDoc(projectRef, {
+              bills: [...existingBills, billData]
+            });
+            console.log('Bill added to existing array successfully');
+          }
+
+          // Update quotation status
+          console.log('Updating quotation status...');
+          await updateDoc(doc(db, 'quotations', quotation.id), {
+            status: 'moved_to_bill',
+            movedToBill: true,
+            billNumber: billNumber
+          });
+          console.log('Quotation status updated successfully');
+
+          // Update project status after adding bill
+          await updateProjectStatus(project.id);
+
+          // Refresh quotations
+          const q = query(collection(db, 'quotations'), where('projectId', '==', project.id));
+          const querySnapshot = await getDocs(q);
+          const quotationsList = querySnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+          }));
+          setQuotations(quotationsList);
+          console.log('Quotations refreshed successfully');
+
+          // Close view modal
+          setViewQuotation(null);
+          alert('Quotation successfully moved to bill!');
+        } catch (updateError) {
+          console.error('Detailed update error:', {
+            error: updateError,
+            message: updateError.message,
+            code: updateError.code,
+            stack: updateError.stack
+          });
+          
+          // Try alternative approach without arrayUnion
+          try {
+            console.log('Trying alternative update approach...');
+            const currentBills = projectData.bills || [];
+            await updateDoc(projectRef, {
+              bills: [...currentBills, billData]
+            });
+            
+            await updateDoc(doc(db, 'quotations', quotation.id), {
+              status: 'moved_to_bill',
+              movedToBill: true,
+              billNumber: billNumber
+            });
+
+            // Update project status after adding bill
+            await updateProjectStatus(project.id);
+
+            const q = query(collection(db, 'quotations'), where('projectId', '==', project.id));
+            const querySnapshot = await getDocs(q);
+            const quotationsList = querySnapshot.docs.map(doc => ({
+              id: doc.id,
+              ...doc.data()
+            }));
+            setQuotations(quotationsList);
+
+            setViewQuotation(null);
+            alert('Quotation successfully moved to bill!');
+          } catch (retryError) {
+            console.error('Detailed retry error:', {
+              error: retryError,
+              message: retryError.message,
+              code: retryError.code,
+              stack: retryError.stack
+            });
+            throw new Error(`Failed to update project with bill data: ${retryError.message}`);
+          }
+        }
       }
     } catch (error) {
-      console.error('Error moving quotation to bill:', error);
-      alert('Error moving quotation to bill. Please try again.');
+      console.error('Full error details:', {
+        error: error,
+        message: error.message,
+        code: error.code,
+        stack: error.stack
+      });
+      alert(`Error moving quotation to bill: ${error.message}`);
     }
   };
 
   const generateBillNumber = async () => {
-    const today = new Date();
-    const monthDate = `${(today.getMonth() + 1).toString().padStart(2, '0')}${today.getDate().toString().padStart(2, '0')}`;
-    
-    // Get all bills for today to determine sequence number
-    const startOfDay = new Date(today.setHours(0, 0, 0, 0));
-    const endOfDay = new Date(today.setHours(23, 59, 59, 999));
-    
-    const q = query(
-      collection(db, 'bills'),
-      where('createdAt', '>=', startOfDay),
-      where('createdAt', '<=', endOfDay)
-    );
-    
-    const querySnapshot = await getDocs(q);
-    const sequenceNum = (querySnapshot.size + 1).toString().padStart(3, '0');
-    
-    return `B${monthDate}/${sequenceNum}`;
+    try {
+      const today = new Date();
+      const monthDate = `${(today.getMonth() + 1).toString().padStart(2, '0')}${today.getDate().toString().padStart(2, '0')}`;
+      
+      // Get project reference
+      const projectRef = doc(db, 'projects', project.id);
+      const projectDoc = await getDoc(projectRef);
+      
+      if (!projectDoc.exists()) {
+        throw new Error('Project not found while generating bill number');
+      }
+      
+      const projectData = projectDoc.data();
+      console.log('Project data for bill number:', projectData);
+      
+      // Get current bills count for today
+      const todayBills = (projectData.bills || []).filter(bill => {
+        if (!bill.createdAt) return false;
+        const billDate = bill.createdAt?.toDate?.() || bill.createdAt;
+        return billDate.getDate() === today.getDate() &&
+               billDate.getMonth() === today.getMonth() &&
+               billDate.getFullYear() === today.getFullYear();
+      });
+      
+      const sequenceNum = (todayBills.length + 1).toString().padStart(3, '0');
+      const billNumber = `B${monthDate}/${sequenceNum}`;
+      console.log('Generated bill number:', billNumber);
+      return billNumber;
+    } catch (error) {
+      console.error('Error generating bill number:', {
+        error: error,
+        message: error.message,
+        code: error.code,
+        stack: error.stack
+      });
+      throw new Error(`Failed to generate bill number: ${error.message}`);
+    }
   };
 
   // Modify handleSubmit to handle both create and edit
@@ -369,9 +507,43 @@ const Quotation = ({ project }) => {
         if (isEditing) {
           // Update existing quotation
           await updateDoc(doc(db, 'quotations', editQuotation.id), quotationData);
+          
+          // Update quotation in project's quotations array
+          const projectRef = doc(db, 'projects', project.id);
+          const projectDoc = await getDoc(projectRef);
+          if (projectDoc.exists()) {
+            const projectData = projectDoc.data();
+            const updatedQuotations = projectData.quotations.map(q => 
+              q.id === editQuotation.id ? quotationData : q
+            );
+            await updateDoc(projectRef, { quotations: updatedQuotations });
+          }
         } else {
           // Create new quotation
-          await addDoc(collection(db, 'quotations'), quotationData);
+          const docRef = await addDoc(collection(db, 'quotations'), quotationData);
+          
+          // Add quotation to project's quotations array and update status if needed
+          const projectRef = doc(db, 'projects', project.id);
+          const projectDoc = await getDoc(projectRef);
+          if (projectDoc.exists()) {
+            const projectData = projectDoc.data();
+            const updatedQuotations = [...(projectData.quotations || []), {
+              ...quotationData,
+              id: docRef.id
+            }];
+            
+            // Only update status to Quotation if current status is Planning
+            const updateData = {
+              quotations: updatedQuotations
+            };
+            
+            // Check if status is Planning (case-insensitive)
+            if (projectData.status?.toLowerCase() === 'planning') {
+              updateData.status = 'Quotation';
+            }
+            
+            await updateDoc(projectRef, updateData);
+          }
         }
 
         // Reset form and states
@@ -420,12 +592,14 @@ const Quotation = ({ project }) => {
       <div className="quotations-container">
         <div className="quotations-header">
           <h2>Quotations for {project.name}</h2>
-          <button 
-            className="add-quotation-button"
-            onClick={handleAddQuotationClick}
-          >
-            Add Quotation
-          </button>
+          {!viewOnly && (
+            <button 
+              className="add-quotation-button"
+              onClick={handleAddQuotationClick}
+            >
+              Add Quotation
+            </button>
+          )}
         </div>
 
         {showAddForm && (
@@ -718,7 +892,14 @@ const Quotation = ({ project }) => {
                         min="1"
                         required
                       />
-                      <span className="item-price">₹{item.price}</span>
+                      <input
+                        type="number"
+                        value={item.price}
+                        min="0"
+                        onChange={e => handlePriceChange(index, e.target.value)}
+                        required
+                        className="item-price-input"
+                      />
                       <span className="item-unit">{item.unit}</span>
                       <span className="item-total">₹{item.total}</span>
                       {index > 0 && (
@@ -784,7 +965,7 @@ const Quotation = ({ project }) => {
                     >
                       View
                     </button>
-                    {!quotation.movedToBill && (
+                    {!viewOnly && !quotation.movedToBill && (
                       <button 
                         className="edit-button"
                         onClick={() => handleEditQuotation(quotation)}
@@ -867,7 +1048,7 @@ const Quotation = ({ project }) => {
                 </table>
               </div>
               <div className="modal-footer">
-                {!viewQuotation.movedToBill && (
+                {!viewOnly && !viewQuotation.movedToBill && (
                   <button 
                     className="move-to-bill-button"
                     onClick={() => handleMoveToBill(viewQuotation)}
